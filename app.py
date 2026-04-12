@@ -1276,6 +1276,9 @@ def _render_index_html(
     let currentPlaybackChunkIndex = null;
     let currentPlaybackMarkedComplete = false;
     let currentPromptAudioPreviewUrl = null;
+    let currentRealtimePlaybackStartAt = null;
+    let currentRealtimePlaybackScheduledAudioSeconds = 0;
+    let currentRealtimePlaybackChunkRanges = [];
 
     const demosById = new Map();
     for (const demo of DEMOS) {
@@ -1596,6 +1599,70 @@ def _render_index_html(
       pauseBtn.textContent = "Pause Playback";
     }
 
+    function resetRealtimePlaybackTracking() {
+      currentRealtimePlaybackStartAt = null;
+      currentRealtimePlaybackScheduledAudioSeconds = 0;
+      currentRealtimePlaybackChunkRanges = [];
+    }
+
+    function normalizeRealtimeChunkRanges(rawRanges) {
+      if (!Array.isArray(rawRanges)) {
+        return [];
+      }
+      const normalizedRanges = [];
+      for (const rawRange of rawRanges) {
+        if (!Array.isArray(rawRange) || rawRange.length < 3) {
+          continue;
+        }
+        const startSeconds = Number(rawRange[0]);
+        const endSeconds = Number(rawRange[1]);
+        const chunkIndex = Number(rawRange[2]);
+        if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || !Number.isFinite(chunkIndex)) {
+          continue;
+        }
+        normalizedRanges.push([
+          Math.max(0, startSeconds),
+          Math.max(0, endSeconds),
+          Math.max(0, Math.trunc(chunkIndex))
+        ]);
+      }
+      normalizedRanges.sort((a, b) => a[1] - b[1]);
+      return normalizedRanges;
+    }
+
+    function resolveRealtimeChunkIndexByPlaybackSeconds(playbackSeconds) {
+      if (!currentRealtimePlaybackChunkRanges.length) {
+        return null;
+      }
+      const clampedSeconds = Math.max(0, Number(playbackSeconds) || 0);
+      for (const [, endSeconds, chunkIndex] of currentRealtimePlaybackChunkRanges) {
+        if (clampedSeconds <= endSeconds + 1e-6) {
+          return chunkIndex;
+        }
+      }
+      return currentRealtimePlaybackChunkRanges[currentRealtimePlaybackChunkRanges.length - 1][2];
+    }
+
+    function updateRealtimePlaybackHighlightFromLocalClock() {
+      if (!currentAudioContext || currentRealtimePlaybackPaused) {
+        return;
+      }
+      if (currentRealtimePlaybackStartAt === null || !currentRealtimePlaybackChunkRanges.length) {
+        return;
+      }
+      const elapsedPlaybackSeconds = Math.max(0, currentAudioContext.currentTime - currentRealtimePlaybackStartAt);
+      const clampedPlaybackSeconds = Math.min(
+        elapsedPlaybackSeconds,
+        currentRealtimePlaybackScheduledAudioSeconds > 0
+          ? currentRealtimePlaybackScheduledAudioSeconds
+          : elapsedPlaybackSeconds
+      );
+      const chunkIndex = resolveRealtimeChunkIndexByPlaybackSeconds(clampedPlaybackSeconds);
+      if (chunkIndex !== null && chunkIndex !== undefined) {
+        setPlaybackHighlight(chunkIndex);
+      }
+    }
+
     function base64ToBlob(base64Value, mimeType) {
       const binary = atob(base64Value);
       const bytes = new Uint8Array(binary.length);
@@ -1686,7 +1753,15 @@ def _render_index_html(
       const now = currentAudioContext.currentTime;
       const startAt = Math.max(nextPlaybackTime || (now + currentInitialPlaybackDelaySeconds), now + 0.02);
       source.start(startAt);
-      nextPlaybackTime = startAt + audioBuffer.duration;
+      const endAt = startAt + audioBuffer.duration;
+      nextPlaybackTime = endAt;
+      if (currentRealtimePlaybackStartAt === null) {
+        currentRealtimePlaybackStartAt = startAt;
+      }
+      currentRealtimePlaybackScheduledAudioSeconds = Math.max(
+        currentRealtimePlaybackScheduledAudioSeconds,
+        endAt - currentRealtimePlaybackStartAt
+      );
     }
 
     function clearRealtimePlaybackCompletionTimer() {
@@ -1713,6 +1788,8 @@ def _render_index_html(
           return;
         }
 
+        updateRealtimePlaybackHighlightFromLocalClock();
+
         const remainingSeconds = nextPlaybackTime - currentAudioContext.currentTime;
         if (remainingSeconds > 0.05) {
           currentRealtimePlaybackCompletionTimer = window.setTimeout(() => {
@@ -1729,6 +1806,7 @@ def _render_index_html(
         currentAudioContext = null;
         currentRealtimePlaybackPaused = false;
         nextPlaybackTime = 0;
+        resetRealtimePlaybackTracking();
         updatePauseButtonState();
       }
 
@@ -1762,6 +1840,7 @@ def _render_index_html(
       }
       nextPlaybackTime = 0;
       currentRealtimePlaybackPaused = false;
+      resetRealtimePlaybackTracking();
       currentPlaybackMarkedComplete = false;
       setPlaybackHighlight(null);
       updatePauseButtonState();
@@ -1843,6 +1922,7 @@ def _render_index_html(
       await currentAudioContext.resume();
       nextPlaybackTime = currentAudioContext.currentTime + currentInitialPlaybackDelaySeconds;
       currentRealtimePlaybackPaused = false;
+      resetRealtimePlaybackTracking();
       clearRealtimePlaybackCompletionTimer();
       updatePauseButtonState();
       currentStreamAbortController = new AbortController();
@@ -1943,6 +2023,8 @@ def _render_index_html(
       if (Array.isArray(result.text_chunks) && result.text_chunks.length > 0 && playbackChunks.length === 0) {
         renderPlaybackScript(result.text_chunks, normalizedTextOutput.value || textInput.value);
       }
+      currentRealtimePlaybackChunkRanges = normalizeRealtimeChunkRanges(result.audio_chunk_ranges);
+      updateRealtimePlaybackHighlightFromLocalClock();
       setStatus(runStatus, result.run_status || "Stream complete.");
       if (currentStreamId) {
         fetch(`${APP_BASE}/api/generate-stream/${encodeURIComponent(currentStreamId)}/close`, {
@@ -1959,6 +2041,7 @@ def _render_index_html(
         if (currentRealtimePlaybackPaused) {
           await currentAudioContext.resume();
           currentRealtimePlaybackPaused = false;
+          updateRealtimePlaybackHighlightFromLocalClock();
         } else {
           await currentAudioContext.suspend();
           currentRealtimePlaybackPaused = true;
@@ -2581,6 +2664,12 @@ def _build_app(
             return JSONResponse(status_code=202, content=snapshot)
 
         result = dict(job.final_result)
+        audio_chunk_ranges: list[list[float | int]] = []
+        with job.lock:
+            audio_chunk_ranges = [
+                [float(start_seconds), float(end_seconds), int(chunk_index)]
+                for start_seconds, end_seconds, chunk_index in job.audio_chunk_ranges
+            ]
         audio_base64_payload = str(result.get("audio_base64") or "")
         audio_path_for_response = str(result.get("audio_path") or "").strip()
         if not audio_base64_payload and audio_path_for_response:
@@ -2601,6 +2690,7 @@ def _build_app(
             "stream_metrics": _stream_metrics_text(snapshot),
             "warmup_status_text": _warmup_status_text(warmup_manager.snapshot()),
             "text_chunks": result.get("text_chunks") or snapshot.get("text_chunks") or [],
+            "audio_chunk_ranges": audio_chunk_ranges,
             "audio_base64": audio_base64_payload,
         }
 
