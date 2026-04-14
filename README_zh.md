@@ -50,6 +50,7 @@ MOSS-TTS-Nano 是来自 [MOSI.AI](https://mosi.cn/#hero) 和 [OpenMOSS 团队](h
   - [CLI 命令：`moss-tts-nano generate`](#cli-命令-moss-tts-nano-generate)
   - [CLI 命令：`moss-tts-nano serve`](#cli-命令-moss-tts-nano-serve)
 - [MOSS-Audio-Tokenizer-Nano](#moss-audio-tokenizer-nano)
+- [MOSS-TTS 家族](#moss-tts)
 - [许可证](#许可证)
 - [引用](#引用)
 - [Star 历史](#star-历史)
@@ -188,6 +189,33 @@ moss-tts-nano serve
 | 模型 | Hugging Face | ModelScope |
 |:-----:|:------------:|:----------:|
 | **MOSS-Audio-Tokenizer-Nano** | [![Hugging Face](https://img.shields.io/badge/Huggingface-Model-orange?logo=huggingface)](https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano) | [![ModelScope](https://img.shields.io/badge/ModelScope-Model-7B61FF?logo=modelscope&logoColor=white)](https://modelscope.cn/models/openmoss/MOSS-Audio-Tokenizer-Nano) |
+
+<a id="moss-tts"></a>
+## MOSS-TTS 家族
+
+### 介绍
+
+**MOSS-TTS 家族**是 OpenMOSS 开源的语音与声音生成模型系列，面向自然语音、高表现力表达、长文本稳定生成、多说话人交互、音色设计、音效生成以及实时语音响应等任务。
+
+这个系列目前包含以下模型：
+
+- **MOSS-TTS**：家族中的旗舰模型，支持 **高保真零样本语音克隆**、**长文本长语音生成**、**拼音 / 音素 / 时长细粒度控制**，以及 **多语种 / 中英混合合成**。
+- **MOSS-TTS-Local-Transformer**：基于 `MossTTSLocal` 的较小参数模型，用更轻量的规模延续 MOSS-TTS 家族的语音生成能力。
+- **MOSS-TTSD-v1.0**：面向 **高表现力**、**多说话人**、**超长对话** 场景的有声对话生成模型。
+- **MOSS-VoiceGenerator**：音色设计模型，可直接根据**文本提示**生成多样的音色与说话风格，不需要参考音频。
+- **MOSS-SoundEffect**：可控音效生成模型，支持自然环境、城市场景、生物、人类动作和短音乐化片段等声音生成。
+- **MOSS-TTS-Realtime**：面向低延迟语音智能体的实时语音模型，强调多轮回复中的自然性、连贯性和音色一致性。
+
+### 已发布模型
+
+| 模型 | 架构 | 参数规模 | Hugging Face | ModelScope |
+|---|---|---:|---|---|
+| **MOSS-TTS** | `MossTTSDelay` | 8B | [![Hugging Face](https://img.shields.io/badge/Huggingface-Model-orange?logo=huggingface)](https://huggingface.co/OpenMOSS-Team/MOSS-TTS) | [![ModelScope](https://img.shields.io/badge/ModelScope-Model-7B61FF?logo=modelscope&logoColor=white)](https://modelscope.cn/models/openmoss/MOSS-TTS) |
+| **MOSS-TTS-Local-Transformer** | `MossTTSLocal` | 1.7B | [![Hugging Face](https://img.shields.io/badge/Huggingface-Model-orange?logo=huggingface)](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer) | [![ModelScope](https://img.shields.io/badge/ModelScope-Model-7B61FF?logo=modelscope&logoColor=white)](https://modelscope.cn/models/openmoss/MOSS-TTS-Local-Transformer) |
+| **MOSS-TTSD-v1.0** | `MossTTSDelay` | 8B | [![Hugging Face](https://img.shields.io/badge/Huggingface-Model-orange?logo=huggingface)](https://huggingface.co/OpenMOSS-Team/MOSS-TTSD-v1.0) | [![ModelScope](https://img.shields.io/badge/ModelScope-Model-7B61FF?logo=modelscope&logoColor=white)](https://modelscope.cn/models/openmoss/MOSS-TTSD-v1.0) |
+| **MOSS-VoiceGenerator** | `MossTTSDelay` | 1.7B | [![Hugging Face](https://img.shields.io/badge/Huggingface-Model-orange?logo=huggingface)](https://huggingface.co/OpenMOSS-Team/MOSS-VoiceGenerator) | [![ModelScope](https://img.shields.io/badge/ModelScope-Model-7B61FF?logo=modelscope&logoColor=white)](https://modelscope.cn/models/openmoss/MOSS-VoiceGenerator) |
+| **MOSS-SoundEffect** | `MossTTSDelay` | 8B | [![Hugging Face](https://img.shields.io/badge/Huggingface-Model-orange?logo=huggingface)](https://huggingface.co/OpenMOSS-Team/MOSS-SoundEffect) | [![ModelScope](https://img.shields.io/badge/ModelScope-Model-7B61FF?logo=modelscope&logoColor=white)](https://modelscope.cn/models/openmoss/MOSS-SoundEffect) |
+| **MOSS-TTS-Realtime** | `MossTTSRealtime` | 1.7B | [![Hugging Face](https://img.shields.io/badge/Huggingface-Model-orange?logo=huggingface)](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Realtime) | [![ModelScope](https://img.shields.io/badge/ModelScope-Model-7B61FF?logo=modelscope&logoColor=white)](https://modelscope.cn/models/openmoss/MOSS-TTS-Realtime) |
 
 ## 许可证
 
