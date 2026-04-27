@@ -54,6 +54,7 @@ MOSS-TTS-Nano is an open-source **multilingual tiny speech generation model** fr
   - [Voice Clone with `infer.py`](#voice-clone-with-inferpy)
   - [Local Web Demo with `app.py`](#local-web-demo-with-apppy)
   - [ONNX CPU Inference](#onnx-cpu-version)
+  - [Export TTS-only ONNX Weights](#export-tts-only-onnx-weights)
   - [CLI Command: `moss-tts-nano generate`](#cli-command-moss-tts-nano-generate)
   - [CLI Command: `moss-tts-nano serve`](#cli-command-moss-tts-nano-serve)
   - [Finetuning](#finetuning)
@@ -211,6 +212,32 @@ python app_onnx.py
 Then open `http://127.0.0.1:18083` in your browser.
 
 The first startup may spend extra time downloading assets if `models/` does not contain the ONNX weights yet.
+
+### Export TTS-only ONNX Weights
+
+If you retrain `MOSS-TTS-Nano`, you need to re-export the TTS-side ONNX weights. The exporter under [`onnx/`](./onnx) takes a local Hugging Face-format `MOSS-TTS-Nano` checkpoint and outputs a TTS-only ONNX model directory.
+
+Example:
+
+```bash
+python onnx/export_hf_to_tts_onnx.py \
+  --checkpoint-path /path/to/MOSS-TTS-Nano \
+  --output-dir /path/to/MOSS-TTS-Nano-100M-ONNX
+```
+
+The output directory contains:
+
+- `moss_tts_prefill.onnx`
+- `moss_tts_decode_step.onnx`
+- `moss_tts_local_decoder.onnx`
+- `moss_tts_local_cached_step.onnx`
+- `moss_tts_local_fixed_sampled_frame.onnx`
+- `moss_tts_global_shared.data`
+- `moss_tts_local_shared.data`
+- `tts_browser_onnx_meta.json`
+- `tokenizer.model`
+
+This is intended for the ONNX deployment path only. Existing prompt audio codes produced by `MOSS-Audio-Tokenizer-Nano` do not need to be regenerated when the audio tokenizer stays fixed.
 
 ### CLI Command: `moss-tts-nano generate`
 

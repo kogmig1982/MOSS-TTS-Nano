@@ -51,6 +51,7 @@ MOSS-TTS-Nano 是来自 [MOSI.AI](https://mosi.cn/#hero) 和 [OpenMOSS 团队](h
   - [使用 `infer.py` 进行语音克隆](#使用-inferpy-进行语音克隆)
   - [使用 `app.py` 启动本地-web-演示](#使用-apppy-启动本地-web-演示)
   - [ONNX CPU 版本](#onnx-cpu-version)
+  - [导出仅 TTS 的 ONNX 权重](#导出仅-tts-的-onnx-权重)
   - [CLI 命令：`moss-tts-nano generate`](#cli-命令-moss-tts-nano-generate)
   - [CLI 命令：`moss-tts-nano serve`](#cli-命令-moss-tts-nano-serve)
   - [微调](#微调)
@@ -252,6 +253,32 @@ python app_onnx.py
 然后在浏览器中打开 `http://127.0.0.1:18083`。
 
 首次启动如果本地没有 ONNX 权重，会先自动下载。
+
+### 导出仅 TTS 的 ONNX 权重
+
+如果重新训练了 `MOSS-TTS-Nano`，那么需要重导 TTS 侧 ONNX 权重。[`onnx/`](./onnx) 目录下的导出脚本接收本地 Hugging Face 格式的 `MOSS-TTS-Nano` checkpoint，并输出一套仅包含 TTS 侧文件的 ONNX 模型目录。
+
+示例：
+
+```bash
+python onnx/export_hf_to_tts_onnx.py \
+  --checkpoint-path /path/to/MOSS-TTS-Nano \
+  --output-dir /path/to/MOSS-TTS-Nano-100M-ONNX
+```
+
+输出目录包含：
+
+- `moss_tts_prefill.onnx`
+- `moss_tts_decode_step.onnx`
+- `moss_tts_local_decoder.onnx`
+- `moss_tts_local_cached_step.onnx`
+- `moss_tts_local_fixed_sampled_frame.onnx`
+- `moss_tts_global_shared.data`
+- `moss_tts_local_shared.data`
+- `tts_browser_onnx_meta.json`
+- `tokenizer.model`
+
+这个脚本面向 ONNX 部署链路。只要 `MOSS-Audio-Tokenizer-Nano` 没变，原先基于它生成的 prompt audio codes 不需要重新生成。
 
 ## MOSS-Audio-Tokenizer-Nano
 
