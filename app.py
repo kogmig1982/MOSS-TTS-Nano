@@ -1043,6 +1043,14 @@ def _render_index_html(
         gap: 14px;
       }
     }
+    #voices-table th, #voices-table td {
+      text-align: left;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    #voices-table th { font-weight: 600; }
+    #tab-manage-voices { cursor: pointer; }
+    #tab-voice-clone { cursor: pointer; }
   </style>
 </head>
 <body>
@@ -1056,10 +1064,77 @@ def _render_index_html(
       </ul>
       <p class="build-note">Built with <a href="https://github.com/OpenMOSS/MOSS-TTS-Nano" target="_blank" rel="noopener noreferrer">MOSS-TTS-Nano</a>.</p>
       <div class="top-tabs" role="tablist" aria-label="Demo mode">
-        <button class="top-tab active" type="button" aria-selected="true">Voice Clone</button>
+        <button class="top-tab active" id="tab-voice-clone" type="button" aria-selected="true" onclick="switchTab('voice-clone')">Voice Clone</button>
+        <button class="top-tab" id="tab-manage-voices" type="button" aria-selected="false" onclick="switchTab('manage-voices')">Manage Voices</button>
       </div>
+      <script>
+        function switchTab(t){
+          var m=t==="manage-voices";
+          var a=document.getElementById("tab-voice-clone"),b=document.getElementById("tab-manage-voices"),
+              c=document.getElementById("panel-voice-clone"),d=document.getElementById("panel-manage-voices");
+          if(!a||!b||!c||!d)return;
+          a.className=m?"top-tab":"top-tab active";a.setAttribute("aria-selected",String(!m));
+          b.className=m?"top-tab active":"top-tab";b.setAttribute("aria-selected",String(m));
+          c.style.display=m?"none":"";d.style.display=m?"":"none";
+          if(m)mvLoadVoices();
+        }
+        function mvBase(){return typeof APP_BASE!=="undefined"?APP_BASE:"";}
+        function mvLoadVoices(){
+          var tbody=document.getElementById("voices-tbody");
+          if(!tbody)return;
+          tbody.innerHTML="";
+          var loadingRow=tbody.insertRow();
+          loadingRow.insertCell().colSpan=4;
+          loadingRow.cells[0].textContent="Loading…";
+          fetch(mvBase()+"/api/voices").then(function(r){
+            if(!r.ok)throw new Error("HTTP "+r.status);
+            return r.json();
+          }).then(function(voices){
+            tbody.innerHTML="";
+            if(!voices||!voices.length){
+              var row=tbody.insertRow();
+              var cell=row.insertCell();
+              cell.colSpan=4;
+              cell.textContent="No builtin voices found.";
+              return;
+            }
+            voices.forEach(function(v){
+              var row=tbody.insertRow();
+              row.insertCell().textContent=v.voice||"";
+              row.insertCell().textContent=v.display_name||"";
+              row.insertCell().textContent=v.group||"";
+              var actionCell=row.insertCell();
+              var btn=document.createElement("button");
+              btn.textContent="删除";
+              btn.style.cursor="pointer";
+              (function(name){
+                btn.addEventListener("click",function(){mvDeleteVoice(name);});
+              })(v.voice);
+              actionCell.appendChild(btn);
+            });
+          }).catch(function(e){
+            tbody.innerHTML="";
+            var row=tbody.insertRow();
+            var cell=row.insertCell();
+            cell.colSpan=4;
+            cell.textContent="Error: "+e.message;
+          });
+        }
+        function mvDeleteVoice(name){
+          if(!confirm("确认删除音色："+name+"？"))return;
+          fetch(mvBase()+"/api/voices/"+encodeURIComponent(name),{method:"DELETE"}).then(function(r){
+            return r.json();
+          }).then(function(d){
+            if(d.ok)mvLoadVoices();
+            else alert("删除失败："+(d.error||"unknown"));
+          }).catch(function(e){
+            alert("请求失败："+e.message);
+          });
+        }
+      </script>
     </div>
 
+    <div id="panel-voice-clone">
     <div class="grid">
       <div class="panel input-panel">
         <div class="field">
@@ -1231,6 +1306,43 @@ def _render_index_html(
         <div class="meta">Checkpoint: __CHECKPOINT__</div>
         <div class="meta">Audio Tokenizer: __AUDIO_TOKENIZER__</div>
       </div>
+    </div>
+    </div>
+
+    <div id="panel-manage-voices" style="display:none;padding:24px 0">
+      <h2 style="margin-bottom:16px">Builtin Voices</h2>
+      <table id="voices-table" style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr>
+            <th>Voice ID</th><th>Display Name</th><th>Group</th><th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="voices-tbody"></tbody>
+      </table>
+
+      <h2 style="margin:28px 0 16px">Add New Voice</h2>
+      <form id="add-voice-form">
+        <div class="field">
+          <label>Voice ID <span class="meta">（唯一标识，如 MyVoice）</span></label>
+          <input type="text" id="new-voice-name" style="width:100%;box-sizing:border-box" required />
+        </div>
+        <div class="field">
+          <label>Display Name</label>
+          <input type="text" id="new-display-name" style="width:100%;box-sizing:border-box" />
+        </div>
+        <div class="field">
+          <label>Group</label>
+          <input type="text" id="new-group" style="width:100%;box-sizing:border-box" placeholder="Custom" />
+        </div>
+        <div class="field">
+          <label>Reference Audio (WAV)</label>
+          <input type="file" id="new-voice-audio" accept=".wav,audio/*" required />
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;margin-top:8px">
+          <button type="submit" class="btn">Add Voice</button>
+          <span id="add-voice-status" class="meta"></span>
+        </div>
+      </form>
     </div>
   </div>
 
@@ -2141,6 +2253,45 @@ def _render_index_html(
     applySelectedDemo(true);
     refreshWarmupStatus();
     window.setInterval(refreshWarmupStatus, 5000);
+
+    // ── Manage Voices tab ──────────────────────────────────────────────
+    {
+      const tabVoiceClone = document.getElementById("tab-voice-clone");
+      const tabManageVoices = document.getElementById("tab-manage-voices");
+      if (tabVoiceClone && tabManageVoices) {
+        tabVoiceClone.addEventListener("click", () => switchTab("voice-clone"));
+        tabManageVoices.addEventListener("click", () => switchTab("manage-voices"));
+      }
+    }
+
+    document.getElementById("add-voice-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const statusEl = document.getElementById("add-voice-status");
+      const voiceName = document.getElementById("new-voice-name").value.trim();
+      const displayName = document.getElementById("new-display-name").value.trim();
+      const group = document.getElementById("new-group").value.trim() || "Custom";
+      const audioFile = document.getElementById("new-voice-audio").files[0];
+      if (!voiceName || !audioFile) return;
+      statusEl.textContent = "编码中，请稍候…";
+      const fd = new FormData();
+      fd.append("voice_name", voiceName);
+      fd.append("display_name", displayName);
+      fd.append("group", group);
+      fd.append("audio", audioFile);
+      try {
+        const resp = await fetch(APP_BASE + "/api/voices", { method: "POST", body: fd });
+        const data = await resp.json();
+        if (data.ok) {
+          statusEl.textContent = "添加成功：" + data.voice;
+          e.target.reset();
+          if (typeof mvLoadVoices === "function") mvLoadVoices();
+        } else {
+          statusEl.textContent = "失败：" + (data.error || "unknown error");
+        }
+      } catch (err) {
+        statusEl.textContent = "请求失败：" + err.message;
+      }
+    });
   </script>
 </body>
 </html>
@@ -2427,6 +2578,90 @@ def _build_app(
                 ),
             )
         )
+
+    def _get_onnx_runtime():
+        ort_runtime = getattr(runtime_manager.default_runtime, "runtime", None)
+        return ort_runtime
+
+    def _save_manifest(ort_runtime) -> None:
+        manifest_data = json.dumps(ort_runtime.manifest, ensure_ascii=False, indent=2)
+        ort_runtime.manifest_path.write_text(manifest_data, encoding="utf-8")
+
+    @app.get("/api/voices")
+    async def list_voices():
+        ort_runtime = _get_onnx_runtime()
+        if ort_runtime is None:
+            return JSONResponse({"error": "Voice management requires ONNX runtime."}, status_code=404)
+        voices = [
+            {
+                "voice": str(v.get("voice", "")),
+                "display_name": str(v.get("display_name", "")),
+                "group": str(v.get("group", "")),
+                "audio_file": str(v.get("audio_file", "")),
+            }
+            for v in ort_runtime.list_builtin_voices()
+        ]
+        return JSONResponse(voices)
+
+    @app.post("/api/voices")
+    async def add_voice(
+        voice_name: str = Form(...),
+        display_name: str = Form(""),
+        group: str = Form("Custom"),
+        audio: UploadFile = File(...),
+    ):
+        ort_runtime = _get_onnx_runtime()
+        if ort_runtime is None:
+            return JSONResponse({"error": "Voice management requires ONNX runtime."}, status_code=404)
+        voice_name = voice_name.strip()
+        if not voice_name:
+            return JSONResponse({"error": "voice_name is required."}, status_code=400)
+        existing_names = {str(v.get("voice", "")) for v in ort_runtime.list_builtin_voices()}
+        if voice_name in existing_names:
+            return JSONResponse({"error": f"Voice '{voice_name}' already exists."}, status_code=400)
+        suffix = Path(audio.filename or "upload.wav").suffix or ".wav"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp_path = tmp.name
+            tmp.write(await audio.read())
+        try:
+            prompt_audio_codes = ort_runtime.encode_reference_audio(tmp_path)
+        except Exception as exc:
+            return JSONResponse({"error": f"Failed to encode audio: {exc}"}, status_code=500)
+        finally:
+            _maybe_delete_file(tmp_path)
+        new_voice = {
+            "voice": voice_name,
+            "display_name": display_name.strip() or voice_name,
+            "group": group.strip() or "Custom",
+            "audio_file": audio.filename or "",
+            "prompt_audio_codes": prompt_audio_codes,
+        }
+        ort_runtime.manifest["builtin_voices"].append(new_voice)
+        try:
+            _save_manifest(ort_runtime)
+        except Exception as exc:
+            ort_runtime.manifest["builtin_voices"].pop()
+            return JSONResponse({"error": f"Failed to save manifest: {exc}"}, status_code=500)
+        return JSONResponse({"ok": True, "voice": voice_name})
+
+    @app.delete("/api/voices/{voice_name}")
+    async def delete_voice(voice_name: str):
+        ort_runtime = _get_onnx_runtime()
+        if ort_runtime is None:
+            return JSONResponse({"error": "Voice management requires ONNX runtime."}, status_code=404)
+        voices = ort_runtime.manifest["builtin_voices"]
+        original_count = len(voices)
+        ort_runtime.manifest["builtin_voices"] = [
+            v for v in voices if str(v.get("voice", "")) != voice_name
+        ]
+        if len(ort_runtime.manifest["builtin_voices"]) == original_count:
+            return JSONResponse({"error": f"Voice '{voice_name}' not found."}, status_code=404)
+        try:
+            _save_manifest(ort_runtime)
+        except Exception as exc:
+            ort_runtime.manifest["builtin_voices"] = voices
+            return JSONResponse({"error": f"Failed to save manifest: {exc}"}, status_code=500)
+        return JSONResponse({"ok": True})
 
     @app.get("/health")
     async def health():
