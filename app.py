@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import queue
+import shutil
 import tempfile
 import threading
 import time
@@ -28,6 +29,7 @@ from moss_tts_nano_runtime import (
     DEFAULT_CHECKPOINT_PATH,
     DEFAULT_OUTPUT_DIR,
     NanoTTSService,
+    VoicePreset,
 )
 from text_normalization_pipeline import (
     TextNormalizationSnapshot as SharedTextNormalizationSnapshot,
@@ -661,7 +663,6 @@ def _render_index_html(
     *,
     request: Request,
     runtime: NanoTTSService,
-    demo_entries: list[DemoEntry],
     warmup_status: str,
     text_normalization_status: str,
 ) -> str:
@@ -1138,21 +1139,27 @@ def _render_index_html(
     <div class="grid">
       <div class="panel input-panel">
         <div class="field">
-          <label for="demo">Demo</label>
-          <select id="demo"></select>
+          <label>Voice Source</label>
+          <div style="display:flex;gap:20px;margin-top:4px">
+            <label><input type="radio" name="voice-source" id="mode-predefined" value="predefined" checked> Predefined Voice</label>
+            <label><input type="radio" name="voice-source" id="mode-upload" value="upload"> Upload Audio</label>
+          </div>
         </div>
 
-        <div class="field">
-          <label for="prompt-audio-upload">Prompt Speech</label>
-          <div class="prompt-audio-box">
-            <input id="prompt-audio-upload" type="file" accept="audio/*,.wav,.mp3,.flac,.m4a,.ogg,.opus,.aac">
-            <audio id="prompt-audio-preview" controls hidden></audio>
-            <div id="prompt-audio-source" class="meta">Using the selected demo prompt speech.</div>
-            <div class="prompt-audio-actions">
-              <button id="choose-prompt-audio-btn" class="secondary" type="button" hidden>选择文件</button>
-              <button id="clear-prompt-audio-btn" class="secondary" type="button" hidden>使用 Demo 音频</button>
-            </div>
+        <div id="section-predefined" class="field">
+          <label for="voice-select">Voice</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="voice-select" style="flex:1"></select>
+            <button id="preview-voice-btn" class="secondary" type="button">&#9654; Play</button>
           </div>
+          <div id="voice-select-status" class="meta"></div>
+          <audio id="voice-preview-audio" controls hidden style="margin-top:6px;width:100%"></audio>
+        </div>
+
+        <div id="section-upload" class="field" style="display:none">
+          <label for="prompt-audio-upload">Reference Audio</label>
+          <input id="prompt-audio-upload" type="file" accept="audio/*,.wav,.mp3,.flac,.m4a,.ogg,.opus,.aac">
+          <audio id="prompt-audio-preview" controls hidden style="margin-top:6px;width:100%"></audio>
         </div>
 
         <div class="field">
@@ -1189,7 +1196,7 @@ def _render_index_html(
           </div>
           <div class="field">
             <label for="cpu-thread-count">CPU Threads</label>
-            <input id="cpu-thread-count" type="number" min="1" step="1" value="4">
+            <input id="cpu-thread-count" type="number" min="1" step="1" value="__DEFAULT_CPU_THREADS__">
           </div>
           <div class="meta">
             This app is CPU-only. CPU Threads maps to torch.set_num_threads for that request.
@@ -1348,17 +1355,17 @@ def _render_index_html(
 
   <script>
     const APP_BASE = __APP_BASE__;
-    const DEMOS = __DEMOS__;
-    const DEFAULT_DEMO_ID = __DEFAULT_DEMO_ID__;
     const DEFAULT_ATTN_IMPLEMENTATION = __DEFAULT_ATTN_IMPLEMENTATION__;
     const DEFAULT_CPU_THREADS = __DEFAULT_CPU_THREADS__;
 
-    const demoSelect = document.getElementById("demo");
+    const voiceSelect = document.getElementById("voice-select");
+    const voiceSelectStatus = document.getElementById("voice-select-status");
+    const voicePreviewAudio = document.getElementById("voice-preview-audio");
+    const previewVoiceBtn = document.getElementById("preview-voice-btn");
     const promptAudioUploadInput = document.getElementById("prompt-audio-upload");
     const promptAudioPreview = document.getElementById("prompt-audio-preview");
-    const promptAudioSource = document.getElementById("prompt-audio-source");
-    const choosePromptAudioBtn = document.getElementById("choose-prompt-audio-btn");
-    const clearPromptAudioBtn = document.getElementById("clear-prompt-audio-btn");
+    const sectionPredefined = document.getElementById("section-predefined");
+    const sectionUpload = document.getElementById("section-upload");
     const warmupStatus = document.getElementById("warmup-status");
     const textNormalizationStatus = document.getElementById("text-normalization-status");
     const runStatus = document.getElementById("run-status");
@@ -1387,119 +1394,56 @@ def _render_index_html(
     let bufferedPlaybackBoundaries = [];
     let currentPlaybackChunkIndex = null;
     let currentPlaybackMarkedComplete = false;
-    let currentPromptAudioPreviewUrl = null;
+    let currentUploadAudioPreviewUrl = null;
     let currentRealtimePlaybackStartAt = null;
     let currentRealtimePlaybackScheduledAudioSeconds = 0;
     let currentRealtimePlaybackChunkRanges = [];
 
-    const demosById = new Map();
-    for (const demo of DEMOS) {
-      demosById.set(demo.id, demo);
-      const option = document.createElement("option");
-      option.value = demo.id;
-      option.textContent = demo.name;
-      if (demo.id === DEFAULT_DEMO_ID) {
-        option.selected = true;
-      }
-      demoSelect.appendChild(option);
-    }
     document.getElementById("attn-implementation").value = DEFAULT_ATTN_IMPLEMENTATION;
 
-    function getSelectedDemo() {
-      return demosById.get(demoSelect.value) || DEMOS[0] || null;
+    function getVoiceMode() {
+      return document.querySelector('input[name="voice-source"]:checked')?.value || "predefined";
     }
 
-    function getUploadedPromptAudioFile() {
-      const files = promptAudioUploadInput.files;
-      return files && files.length > 0 ? files[0] : null;
-    }
-
-    function clearPromptAudioPreviewUrl() {
-      if (!currentPromptAudioPreviewUrl) {
-        return;
-      }
-      URL.revokeObjectURL(currentPromptAudioPreviewUrl);
-      currentPromptAudioPreviewUrl = null;
-    }
-
-    function getDemoPromptAudioUrl(demoId) {
-      return `${APP_BASE}/api/demo-prompt-audio/${encodeURIComponent(demoId)}`;
-    }
-
-    function showPromptAudioFilePicker(message = "选择文件 | 未选择任何文件") {
-      promptAudioPreview.pause();
-      promptAudioPreview.removeAttribute("src");
-      promptAudioPreview.load();
-      promptAudioPreview.hidden = true;
-      promptAudioUploadInput.hidden = false;
-      choosePromptAudioBtn.hidden = true;
-      clearPromptAudioBtn.hidden = true;
-      promptAudioSource.textContent = message;
-    }
-
-    function showPromptAudioPreview({
-      sourceUrl,
-      message,
-      showResetToDemo,
-    }) {
-      promptAudioPreview.src = sourceUrl;
-      promptAudioPreview.hidden = false;
-      promptAudioUploadInput.hidden = true;
-      choosePromptAudioBtn.hidden = false;
-      clearPromptAudioBtn.hidden = !showResetToDemo;
-      promptAudioSource.textContent = message;
-    }
-
-    function updatePromptAudioPanel(demo = getSelectedDemo()) {
-      const uploadedPromptAudio = getUploadedPromptAudioFile();
-      if (uploadedPromptAudio) {
-        clearPromptAudioPreviewUrl();
-        currentPromptAudioPreviewUrl = URL.createObjectURL(uploadedPromptAudio);
-        showPromptAudioPreview({
-          sourceUrl: currentPromptAudioPreviewUrl,
-          message: `Using uploaded prompt speech: ${uploadedPromptAudio.name}`,
-          showResetToDemo: true,
-        });
-        return;
-      }
-
-      clearPromptAudioPreviewUrl();
-
-      if (demo && demo.id) {
-        showPromptAudioPreview({
-          sourceUrl: getDemoPromptAudioUrl(demo.id),
-          message: demo.prompt_speech
-            ? `Using demo prompt speech: ${demo.prompt_speech}`
-            : "Using demo prompt speech.",
-          showResetToDemo: false,
-        });
-        return;
-      }
-
-      showPromptAudioFilePicker();
-    }
-
-    function applySelectedDemo(replaceText = true) {
-      const demo = getSelectedDemo();
-      const uploadedPromptAudio = getUploadedPromptAudioFile();
-
-      if (!demo && !uploadedPromptAudio) {
-        resolvedPrompt.textContent = "";
-        if (replaceText) {
-          textInput.value = "";
+    async function fetchVoices() {
+      voiceSelectStatus.textContent = "Loading voices…";
+      try {
+        const resp = await fetch(APP_BASE + "/api/voices");
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const voices = await resp.json();
+        voiceSelect.innerHTML = "";
+        const groups = new Map();
+        for (const v of voices) {
+          const g = v.group || "Other";
+          if (!groups.has(g)) groups.set(g, []);
+          groups.get(g).push(v);
         }
-        updatePromptAudioPanel(null);
-        renderPlaybackScript([], textInput.value);
-        generateBtn.disabled = true;
-        return;
+        for (const [groupName, groupVoices] of groups) {
+          const optgroup = document.createElement("optgroup");
+          optgroup.label = groupName;
+          for (const v of groupVoices) {
+            const opt = document.createElement("option");
+            opt.value = v.voice;
+            opt.textContent = v.display_name || v.voice;
+            optgroup.appendChild(opt);
+          }
+          voiceSelect.appendChild(optgroup);
+        }
+        voiceSelectStatus.textContent = voices.length ? "" : "No voices found. Add voices in Manage Voices tab.";
+        generateBtn.disabled = voices.length === 0;
+      } catch (err) {
+        voiceSelectStatus.textContent = "Failed to load voices: " + err.message;
       }
+    }
 
-      if (demo && replaceText) {
-        textInput.value = demo.text || "";
-      }
-      updatePromptAudioPanel(demo);
-      previewPlaybackScriptFromInputs();
-      generateBtn.disabled = false;
+    function applyVoiceMode() {
+      const mode = getVoiceMode();
+      sectionPredefined.style.display = mode === "predefined" ? "" : "none";
+      sectionUpload.style.display = mode === "upload" ? "" : "none";
+      voicePreviewAudio.hidden = true;
+      promptAudioPreview.hidden = true;
+      resolvedPrompt.textContent = "";
+      generateBtn.disabled = mode === "predefined" ? voiceSelect.options.length === 0 : true;
     }
 
     function setStatus(node, text, isError = false) {
@@ -1794,15 +1738,16 @@ def _render_index_html(
     }
 
     function buildFormData() {
-      const demo = getSelectedDemo();
-      const uploadedPromptAudio = getUploadedPromptAudioFile();
       const formData = new FormData();
       formData.append("text", textInput.value);
-      if (demo) {
-        formData.append("demo_id", demo.id);
-      }
-      if (uploadedPromptAudio) {
-        formData.append("prompt_audio", uploadedPromptAudio);
+      const mode = getVoiceMode();
+      if (mode === "predefined") {
+        formData.append("voice_id", voiceSelect.value);
+      } else {
+        const files = promptAudioUploadInput.files;
+        if (files && files.length > 0) {
+          formData.append("prompt_audio", files[0]);
+        }
       }
       formData.append("max_new_frames", document.getElementById("max-new-frames").value);
       formData.append("voice_clone_max_text_tokens", document.getElementById("voice-clone-max-text-tokens").value);
@@ -2199,31 +2144,42 @@ def _render_index_html(
     }
 
     generateBtn.addEventListener("click", generate);
-    demoSelect.addEventListener("change", async () => {
-      await closeRealtimeStream();
-      clearAudioOutput();
-      applySelectedDemo(true);
-      clearNormalizedOutputs();
-      resolvedPrompt.textContent = "";
-      streamMetrics.textContent = "";
-      setStatus(runStatus, "Idle.");
+
+    document.querySelectorAll('input[name="voice-source"]').forEach((radio) => {
+      radio.addEventListener("change", () => {
+        applyVoiceMode();
+        clearNormalizedOutputs();
+        resolvedPrompt.textContent = "";
+        streamMetrics.textContent = "";
+        setStatus(runStatus, "Idle.");
+      });
     });
+
     promptAudioUploadInput.addEventListener("change", () => {
-      applySelectedDemo(false);
+      const files = promptAudioUploadInput.files;
+      if (files && files.length > 0) {
+        if (currentUploadAudioPreviewUrl) URL.revokeObjectURL(currentUploadAudioPreviewUrl);
+        currentUploadAudioPreviewUrl = URL.createObjectURL(files[0]);
+        promptAudioPreview.src = currentUploadAudioPreviewUrl;
+        promptAudioPreview.hidden = false;
+        generateBtn.disabled = false;
+      } else {
+        promptAudioPreview.hidden = true;
+        generateBtn.disabled = true;
+      }
       clearNormalizedOutputs();
       resolvedPrompt.textContent = "";
       setStatus(runStatus, "Idle.");
     });
-    choosePromptAudioBtn.addEventListener("click", () => {
-      promptAudioUploadInput.click();
+
+    previewVoiceBtn.addEventListener("click", () => {
+      const voiceName = voiceSelect.value;
+      if (!voiceName) return;
+      voicePreviewAudio.src = APP_BASE + "/api/voice-audio/" + encodeURIComponent(voiceName);
+      voicePreviewAudio.hidden = false;
+      voicePreviewAudio.play().catch(() => {});
     });
-    clearPromptAudioBtn.addEventListener("click", () => {
-      promptAudioUploadInput.value = "";
-      applySelectedDemo(false);
-      clearNormalizedOutputs();
-      resolvedPrompt.textContent = "";
-      setStatus(runStatus, "Idle.");
-    });
+
     pauseBtn.addEventListener("click", () => {
       togglePausePlayback().catch((error) => {
         setStatus(runStatus, String(error), true);
@@ -2247,10 +2203,11 @@ def _render_index_html(
       setPlaybackHighlight(null, { markAllPlayed: true });
     });
     window.addEventListener("beforeunload", () => {
-      clearPromptAudioPreviewUrl();
+      if (currentUploadAudioPreviewUrl) URL.revokeObjectURL(currentUploadAudioPreviewUrl);
     });
     updatePauseButtonState();
-    applySelectedDemo(true);
+    applyVoiceMode();
+    fetchVoices();
     refreshWarmupStatus();
     window.setInterval(refreshWarmupStatus, 5000);
 
@@ -2285,6 +2242,7 @@ def _render_index_html(
           statusEl.textContent = "添加成功：" + data.voice;
           e.target.reset();
           if (typeof mvLoadVoices === "function") mvLoadVoices();
+          fetchVoices();
         } else {
           statusEl.textContent = "失败：" + (data.error || "unknown error");
         }
@@ -2296,19 +2254,8 @@ def _render_index_html(
 </body>
 </html>
 """
-    demos_payload = [
-        {
-            "id": demo_entry.demo_id,
-            "name": demo_entry.name,
-            "prompt_speech": demo_entry.prompt_audio_relative_path,
-            "text": demo_entry.text,
-        }
-        for demo_entry in demo_entries
-    ]
     replacements = {
         "__APP_BASE__": json.dumps(base_path),
-        "__DEMOS__": json.dumps(demos_payload, ensure_ascii=False),
-        "__DEFAULT_DEMO_ID__": json.dumps(demo_entries[0].demo_id if demo_entries else ""),
         "__DEFAULT_ATTN_IMPLEMENTATION__": json.dumps(runtime.attn_implementation or "model_default"),
         "__DEFAULT_CPU_THREADS__": json.dumps(max(1, int(os.cpu_count() or 1))),
         "__WARMUP_STATUS__": warmup_status,
@@ -2436,7 +2383,8 @@ def _build_app(
         job: StreamingJob,
         *,
         text: str,
-        prompt_audio_path: str,
+        voice_id: str | None,
+        prompt_audio_path: str | None,
         prompt_audio_display_path: str,
         prompt_audio_cleanup_path: str | None,
         max_new_frames: int,
@@ -2466,7 +2414,7 @@ def _build_app(
                 return selected_runtime.synthesize_stream(
                     text=text,
                     mode="voice_clone",
-                    voice=None,
+                    voice=voice_id,
                     prompt_audio_path=prompt_audio_path,
                     max_new_frames=int(max_new_frames),
                     voice_clone_max_text_tokens=int(voice_clone_max_text_tokens),
@@ -2571,7 +2519,6 @@ def _build_app(
             _render_index_html(
                 request=request,
                 runtime=runtime,
-                demo_entries=demo_entries,
                 warmup_status=_warmup_status_text(warmup_manager.snapshot()),
                 text_normalization_status=_text_normalization_status_text(
                     text_normalizer_manager.snapshot() if text_normalizer_manager is not None else None
@@ -2583,24 +2530,96 @@ def _build_app(
         ort_runtime = getattr(runtime_manager.default_runtime, "runtime", None)
         return ort_runtime
 
+    def _get_custom_voices_dir() -> Path:
+        custom_dir = APP_DIR / "custom_voices"
+        custom_dir.mkdir(parents=True, exist_ok=True)
+        return custom_dir
+
+    def _get_pytorch_services() -> list[NanoTTSService]:
+        services: list[NanoTTSService] = []
+        if hasattr(runtime_manager.default_runtime, "voice_presets"):
+            services.append(runtime_manager.default_runtime)
+        cpu_rt = getattr(runtime_manager, "_cpu_runtime", None)
+        if cpu_rt is not None and hasattr(cpu_rt, "voice_presets"):
+            services.append(cpu_rt)
+        return services
+
+    def _get_all_voice_names() -> set[str]:
+        ort_runtime = _get_onnx_runtime()
+        if ort_runtime is not None:
+            return {str(v.get("voice", "")) for v in ort_runtime.list_builtin_voices()}
+        services = _get_pytorch_services()
+        if services:
+            return set(services[0].voice_presets.keys())
+        return set()
+
+    def _load_custom_voices_into_pytorch() -> None:
+        services = _get_pytorch_services()
+        if not services:
+            return
+        custom_voices_dir = _get_custom_voices_dir()
+        audio_exts = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
+        for audio_file in sorted(custom_voices_dir.iterdir()):
+            if audio_file.suffix.lower() not in audio_exts:
+                continue
+            voice_name = audio_file.stem
+            if not voice_name:
+                continue
+            preset = VoicePreset(name=voice_name, prompt_audio_path=audio_file, description=voice_name)
+            for service in services:
+                if voice_name not in service.voice_presets:
+                    service.voice_presets[voice_name] = preset
+
+    _load_custom_voices_into_pytorch()
+
     def _save_manifest(ort_runtime) -> None:
         manifest_data = json.dumps(ort_runtime.manifest, ensure_ascii=False, indent=2)
         ort_runtime.manifest_path.write_text(manifest_data, encoding="utf-8")
 
+    def _sync_builtin_voices_to_all_runtimes(ort_runtime) -> None:
+        # When voice management modifies the default runtime's manifest, push the
+        # same builtin_voices list to every other cached ONNX runtime adapter so
+        # that TTS requests running on a different thread-count runtime see the
+        # change immediately without requiring a restart.
+        cached_runtimes = getattr(runtime_manager, "_cpu_runtimes", None)
+        if cached_runtimes is None:
+            return
+        voices = ort_runtime.manifest["builtin_voices"]
+        for adapter in list(cached_runtimes.values()):
+            sub_rt = getattr(adapter, "runtime", None)
+            if sub_rt is not None and sub_rt is not ort_runtime:
+                sub_rt.manifest["builtin_voices"] = voices
+
     @app.get("/api/voices")
     async def list_voices():
         ort_runtime = _get_onnx_runtime()
-        if ort_runtime is None:
-            return JSONResponse({"error": "Voice management requires ONNX runtime."}, status_code=404)
-        voices = [
-            {
-                "voice": str(v.get("voice", "")),
-                "display_name": str(v.get("display_name", "")),
-                "group": str(v.get("group", "")),
-                "audio_file": str(v.get("audio_file", "")),
-            }
-            for v in ort_runtime.list_builtin_voices()
-        ]
+        if ort_runtime is not None:
+            voices = [
+                {
+                    "voice": str(v.get("voice", "")),
+                    "display_name": str(v.get("display_name", "")),
+                    "group": str(v.get("group", "")),
+                    "audio_file": str(v.get("audio_file", "")),
+                }
+                for v in ort_runtime.list_builtin_voices()
+            ]
+            return JSONResponse(voices)
+        services = _get_pytorch_services()
+        if not services:
+            return JSONResponse({"error": "Voice management requires ONNX or PyTorch runtime."}, status_code=404)
+        custom_voices_dir = _get_custom_voices_dir()
+        voices = []
+        for preset in services[0].voice_presets.values():
+            try:
+                is_custom = preset.prompt_audio_path.resolve().relative_to(custom_voices_dir.resolve())
+            except ValueError:
+                is_custom = False
+            voices.append({
+                "voice": preset.name,
+                "display_name": preset.description or preset.name,
+                "group": "Custom" if is_custom else "Builtin",
+                "audio_file": preset.prompt_audio_path.name,
+            })
         return JSONResponse(voices)
 
     @app.post("/api/voices")
@@ -2611,56 +2630,97 @@ def _build_app(
         audio: UploadFile = File(...),
     ):
         ort_runtime = _get_onnx_runtime()
-        if ort_runtime is None:
-            return JSONResponse({"error": "Voice management requires ONNX runtime."}, status_code=404)
+        pytorch_services = _get_pytorch_services()
+        if ort_runtime is None and not pytorch_services:
+            return JSONResponse({"error": "Voice management requires ONNX or PyTorch runtime."}, status_code=404)
         voice_name = voice_name.strip()
         if not voice_name:
             return JSONResponse({"error": "voice_name is required."}, status_code=400)
-        existing_names = {str(v.get("voice", "")) for v in ort_runtime.list_builtin_voices()}
-        if voice_name in existing_names:
+        if voice_name in _get_all_voice_names():
             return JSONResponse({"error": f"Voice '{voice_name}' already exists."}, status_code=400)
         suffix = Path(audio.filename or "upload.wav").suffix or ".wav"
+        custom_voices_dir = _get_custom_voices_dir()
+        saved_audio_path = custom_voices_dir / f"{voice_name}{suffix}"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp_path = tmp.name
             tmp.write(await audio.read())
         try:
-            prompt_audio_codes = ort_runtime.encode_reference_audio(tmp_path)
-        except Exception as exc:
-            return JSONResponse({"error": f"Failed to encode audio: {exc}"}, status_code=500)
+            shutil.copy2(tmp_path, saved_audio_path)
+            if ort_runtime is not None:
+                try:
+                    prompt_audio_codes = ort_runtime.encode_reference_audio(tmp_path)
+                except Exception as exc:
+                    _maybe_delete_file(str(saved_audio_path))
+                    return JSONResponse({"error": f"Failed to encode audio: {exc}"}, status_code=500)
+                new_voice = {
+                    "voice": voice_name,
+                    "display_name": display_name.strip() or voice_name,
+                    "group": group.strip() or "Custom",
+                    "audio_file": str(saved_audio_path),
+                    "prompt_audio_codes": prompt_audio_codes,
+                }
+                ort_runtime.manifest["builtin_voices"].append(new_voice)
+                try:
+                    _save_manifest(ort_runtime)
+                except Exception as exc:
+                    ort_runtime.manifest["builtin_voices"].pop()
+                    _maybe_delete_file(str(saved_audio_path))
+                    return JSONResponse({"error": f"Failed to save manifest: {exc}"}, status_code=500)
+                _sync_builtin_voices_to_all_runtimes(ort_runtime)
         finally:
             _maybe_delete_file(tmp_path)
-        new_voice = {
-            "voice": voice_name,
-            "display_name": display_name.strip() or voice_name,
-            "group": group.strip() or "Custom",
-            "audio_file": audio.filename or "",
-            "prompt_audio_codes": prompt_audio_codes,
-        }
-        ort_runtime.manifest["builtin_voices"].append(new_voice)
-        try:
-            _save_manifest(ort_runtime)
-        except Exception as exc:
-            ort_runtime.manifest["builtin_voices"].pop()
-            return JSONResponse({"error": f"Failed to save manifest: {exc}"}, status_code=500)
+        preset = VoicePreset(
+            name=voice_name,
+            prompt_audio_path=saved_audio_path,
+            description=display_name.strip() or voice_name,
+        )
+        for service in pytorch_services:
+            service.voice_presets[voice_name] = preset
         return JSONResponse({"ok": True, "voice": voice_name})
 
     @app.delete("/api/voices/{voice_name}")
     async def delete_voice(voice_name: str):
         ort_runtime = _get_onnx_runtime()
-        if ort_runtime is None:
-            return JSONResponse({"error": "Voice management requires ONNX runtime."}, status_code=404)
-        voices = ort_runtime.manifest["builtin_voices"]
-        original_count = len(voices)
-        ort_runtime.manifest["builtin_voices"] = [
-            v for v in voices if str(v.get("voice", "")) != voice_name
-        ]
-        if len(ort_runtime.manifest["builtin_voices"]) == original_count:
+        pytorch_services = _get_pytorch_services()
+        if ort_runtime is None and not pytorch_services:
+            return JSONResponse({"error": "Voice management requires ONNX or PyTorch runtime."}, status_code=404)
+        deleted = False
+        saved_audio_path: str | None = None
+        if ort_runtime is not None:
+            voices = ort_runtime.manifest["builtin_voices"]
+            original_count = len(voices)
+            for v in voices:
+                if str(v.get("voice", "")) == voice_name:
+                    af = str(v.get("audio_file", ""))
+                    if af:
+                        saved_audio_path = af
+                    break
+            ort_runtime.manifest["builtin_voices"] = [
+                v for v in voices if str(v.get("voice", "")) != voice_name
+            ]
+            if len(ort_runtime.manifest["builtin_voices"]) < original_count:
+                try:
+                    _save_manifest(ort_runtime)
+                except Exception as exc:
+                    ort_runtime.manifest["builtin_voices"] = voices
+                    return JSONResponse({"error": f"Failed to save manifest: {exc}"}, status_code=500)
+                _sync_builtin_voices_to_all_runtimes(ort_runtime)
+                deleted = True
+        for service in pytorch_services:
+            preset = service.voice_presets.pop(voice_name, None)
+            if preset is not None:
+                deleted = True
+                if saved_audio_path is None:
+                    saved_audio_path = str(preset.prompt_audio_path)
+        if not deleted:
             return JSONResponse({"error": f"Voice '{voice_name}' not found."}, status_code=404)
-        try:
-            _save_manifest(ort_runtime)
-        except Exception as exc:
-            ort_runtime.manifest["builtin_voices"] = voices
-            return JSONResponse({"error": f"Failed to save manifest: {exc}"}, status_code=500)
+        if saved_audio_path:
+            custom_voices_dir = _get_custom_voices_dir()
+            try:
+                Path(saved_audio_path).resolve().relative_to(custom_voices_dir.resolve())
+                _maybe_delete_file(saved_audio_path)
+            except ValueError:
+                pass
         return JSONResponse({"ok": True})
 
     @app.get("/health")
@@ -2733,10 +2793,38 @@ def _build_app(
             filename=demo_entry.prompt_audio_path.name,
         )
 
+    @app.get("/api/voice-audio/{voice_name}")
+    async def voice_audio(voice_name: str):
+        ort_runtime = _get_onnx_runtime()
+        if ort_runtime is None:
+            return JSONResponse(status_code=404, content={"error": "ONNX runtime required."})
+        voice_row = next(
+            (v for v in ort_runtime.list_builtin_voices() if v["voice"] == voice_name),
+            None,
+        )
+        if voice_row is None:
+            return JSONResponse(status_code=404, content={"error": f"Voice not found: {voice_name}"})
+        codes = list(voice_row["prompt_audio_codes"])
+        waveform = ort_runtime.decode_full_audio_safe(codes)
+        sample_rate = int(ort_runtime.codec_meta["codec_config"]["sample_rate"])
+        channels = int(ort_runtime.codec_meta["codec_config"]["channels"])
+        buf = io.BytesIO()
+        pcm = np.clip(waveform, -1.0, 1.0)
+        if pcm.ndim == 1:
+            pcm = pcm[:, np.newaxis]
+        pcm_int16 = (pcm * 32767).astype(np.int16)
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(pcm_int16.tobytes())
+        buf.seek(0)
+        return StreamingResponse(buf, media_type="audio/wav")
+
     @app.post("/api/generate-stream/start")
     async def generate_stream_start(
         text: str = Form(...),
-        demo_id: str = Form(""),
+        voice_id: str = Form(""),
         prompt_audio: UploadFile | None = File(None),
         max_new_frames: int = Form(375),
         voice_clone_max_text_tokens: int = Form(75),
@@ -2756,14 +2844,24 @@ def _build_app(
         audio_repetition_penalty: float = Form(1.2),
         seed: str = Form("0"),
     ):
-        try:
-            demo_entry, prompt_audio_path, prompt_audio_display_path, prompt_audio_cleanup_path = (
-                await _resolve_prompt_audio_request(demo_id=demo_id, prompt_audio=prompt_audio)
-            )
-        except ValueError as exc:
-            return JSONResponse(status_code=400, content={"error": str(exc)})
+        voice_id_clean = str(voice_id or "").strip()
+        if voice_id_clean:
+            resolved_voice_id: str | None = voice_id_clean
+            prompt_audio_path: str | None = None
+            prompt_audio_cleanup_path: str | None = None
+            prompt_audio_display_path = f"voice:{voice_id_clean}"
+        elif prompt_audio is not None and prompt_audio.filename:
+            upload_path, upload_display = await _persist_uploaded_prompt_audio(prompt_audio)
+            if upload_path is None:
+                return JSONResponse(status_code=400, content={"error": "voice_id or prompt_audio is required."})
+            resolved_voice_id = None
+            prompt_audio_path = upload_path
+            prompt_audio_cleanup_path = upload_path
+            prompt_audio_display_path = upload_display or upload_path
+        else:
+            return JSONResponse(status_code=400, content={"error": "voice_id or prompt_audio is required."})
 
-        resolved_text = str(text or "").strip() or (demo_entry.text if demo_entry is not None else "")
+        resolved_text = str(text or "").strip()
         if not resolved_text:
             _maybe_delete_file(prompt_audio_cleanup_path)
             return JSONResponse(status_code=400, content={"error": "text is required."})
@@ -2804,6 +2902,7 @@ def _build_app(
                 kwargs={
                     "job": job,
                     "text": str(prepared_texts["text"]),
+                    "voice_id": resolved_voice_id,
                     "prompt_audio_path": prompt_audio_path,
                     "prompt_audio_display_path": prompt_audio_display_path,
                     "prompt_audio_cleanup_path": prompt_audio_cleanup_path,
@@ -2947,7 +3046,7 @@ def _build_app(
     @app.post("/api/generate")
     async def generate(
         text: str = Form(...),
-        demo_id: str = Form(""),
+        voice_id: str = Form(""),
         prompt_audio: UploadFile | None = File(None),
         max_new_frames: int = Form(375),
         voice_clone_max_text_tokens: int = Form(75),
@@ -2967,14 +3066,24 @@ def _build_app(
         audio_repetition_penalty: float = Form(1.2),
         seed: str = Form("0"),
     ):
-        try:
-            demo_entry, prompt_audio_path, prompt_audio_display_path, prompt_audio_cleanup_path = (
-                await _resolve_prompt_audio_request(demo_id=demo_id, prompt_audio=prompt_audio)
-            )
-        except ValueError as exc:
-            return JSONResponse(status_code=400, content={"error": str(exc)})
+        voice_id_clean = str(voice_id or "").strip()
+        if voice_id_clean:
+            resolved_voice_id: str | None = voice_id_clean
+            prompt_audio_path: str | None = None
+            prompt_audio_cleanup_path: str | None = None
+            prompt_audio_display_path = f"voice:{voice_id_clean}"
+        elif prompt_audio is not None and prompt_audio.filename:
+            upload_path, upload_display = await _persist_uploaded_prompt_audio(prompt_audio)
+            if upload_path is None:
+                return JSONResponse(status_code=400, content={"error": "voice_id or prompt_audio is required."})
+            resolved_voice_id = None
+            prompt_audio_path = upload_path
+            prompt_audio_cleanup_path = upload_path
+            prompt_audio_display_path = upload_display or upload_path
+        else:
+            return JSONResponse(status_code=400, content={"error": "voice_id or prompt_audio is required."})
 
-        resolved_text = str(text or "").strip() or (demo_entry.text if demo_entry is not None else "")
+        resolved_text = str(text or "").strip()
         if not resolved_text:
             _maybe_delete_file(prompt_audio_cleanup_path)
             return JSONResponse(status_code=400, content={"error": "text is required."})
@@ -3007,7 +3116,7 @@ def _build_app(
                 return selected_runtime.synthesize(
                     text=str(prepared_texts["text"]),
                     mode="voice_clone",
-                    voice=None,
+                    voice=resolved_voice_id,
                     prompt_audio_path=prompt_audio_path,
                     max_new_frames=int(max_new_frames),
                     voice_clone_max_text_tokens=int(voice_clone_max_text_tokens),
@@ -3121,17 +3230,18 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     vscode_proxy_uri = os.getenv("VSCODE_PROXY_URI", "")
     root_path = _resolve_vscode_root_path(vscode_proxy_uri, args.port)
-    logging.info("root_path=%s", root_path)
+    normalized_root_path = root_path if root_path and root_path != "/" else None
+    logging.info("root_path=%s", normalized_root_path)
     if args.share:
         logging.warning("--share is ignored by the FastAPI-based Nano-TTS app.")
 
-    app = _build_app(runtime, warmup_manager, text_normalizer_manager, root_path)
+    app = _build_app(runtime, warmup_manager, text_normalizer_manager, normalized_root_path)
     uvicorn.run(
         app,
         host=args.host,
         port=args.port,
         log_level="info",
-        root_path=root_path or "",
+        root_path=normalized_root_path or "",
     )
 
 

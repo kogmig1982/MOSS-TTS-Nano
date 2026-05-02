@@ -479,14 +479,12 @@ def _render_index_html_onnx(
     *,
     request,
     runtime,
-    demo_entries,
     warmup_status: str,
     text_normalization_status: str,
 ) -> str:
     html = _LEGACY_RENDER_INDEX_HTML(
         request=request,
         runtime=runtime,
-        demo_entries=demo_entries,
         warmup_status=warmup_status,
         text_normalization_status=text_normalization_status,
     )
@@ -629,14 +627,15 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if args.share:
         logging.warning("--share is ignored by the FastAPI-based ONNX app.")
 
-    app = legacy_app._build_app(runtime, warmup_manager, text_normalizer_manager, root_path)
+    normalized_root_path = root_path if root_path and root_path != "/" else None
+    app = legacy_app._build_app(runtime, warmup_manager, text_normalizer_manager, normalized_root_path)
     app.title = "MOSS-TTS-Nano ONNX Demo"
     uvicorn.run(
         app,
         host=args.host,
         port=args.port,
         log_level="info",
-        root_path=root_path or "",
+        root_path=normalized_root_path or "",
     )
 
 
